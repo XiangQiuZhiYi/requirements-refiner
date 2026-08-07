@@ -1,0 +1,31 @@
+{
+  "name": "requirements-refiner",
+  "version": "0.1.0",
+  "description": "整合需求文档与设计资料，生成可追溯需求包并主持轻量审核",
+  "author": {
+    "name": "Zhiyi"
+  },
+  "license": "UNLICENSED",
+  "keywords": [
+    "requirements",
+    "prd",
+    "review"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "需求收集与完善",
+    "shortDescription": "整合需求与设计资料，生成文档并引导审核",
+    "longDescription": "读取当前环境中可用的语雀与 MasterGo 能力，把需求和设计资料整理为可追溯的 Markdown 需求包，并通过对话逐步主持功能点审核。",
+    "developerName": "Zhiyi",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "使用 $requirements-refiner 检查需求整理环境。",
+      "使用 $requirements-refiner 整理这份需求文档和设计稿。",
+      "使用 $requirements-refiner 开始审核当前需求包。"
+    ]
+  }
+}

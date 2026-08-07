@@ -1,0 +1,45 @@
+{
+  "name": "requirements-refiner",
+  "version": "0.1.0",
+  "description": "将语雀与 MasterGo 资料整理为可审核、可追溯的 Codex 需求包",
+  "type": "module",
+  "bin": {
+    "requirements-refiner": "bin/requirements-refiner.mjs"
+  },
+  "files": [
+    ".codex-plugin/",
+    "bin/",
+    "lib/",
+    "skills/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/installer.test.mjs && node test/test-requirements-tools.mjs && node test/test-ui-context-tools.mjs",
+    "validate": "node scripts/validate-package.mjs",
+    "test:pack": "node scripts/test-package-contents.mjs",
+    "release:check": "npm test && npm run validate && npm run test:pack"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
+  "keywords": [
+    "codex",
+    "requirements",
+    "prd",
+    "yuque",
+    "mastergo"
+  ],
+  "author": "Zhiyi",
+  "license": "UNLICENSED",
+  "main": "index.js",
+  "directories": {
+    "lib": "lib",
+    "test": "test"
+  }
+}

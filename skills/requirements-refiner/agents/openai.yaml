@@ -1,0 +1,4 @@
+interface:
+  display_name: "需求收集与完善"
+  short_description: "整合语雀与 MasterGo 资料，生成需求文档并主持轻量审核"
+  default_prompt: "使用 $requirements-refiner 检查环境或整理需求资料；生成后通过对话逐步引导我完成审核。"

@@ -1,0 +1,20 @@
+{
+  "name": "requirements-refiner-smoke",
+  "interface": {
+    "displayName": "Requirements Refiner Smoke Test"
+  },
+  "plugins": [
+    {
+      "name": "requirements-refiner",
+      "source": {
+        "source": "local",
+        "path": "./plugins/requirements-refiner"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
