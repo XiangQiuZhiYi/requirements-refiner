@@ -1,6 +1,6 @@
 {
   "name": "requirements-refiner",
-  "version": "0.1.0",
+  "version": "0.1.5",
   "description": "将语雀与 MasterGo 资料整理为可审核、可追溯的 Codex 需求包",
   "type": "module",
   "bin": {
@@ -36,10 +36,5 @@
     "mastergo"
   ],
   "author": "Zhiyi",
-  "license": "UNLICENSED",
-  "main": "index.js",
-  "directories": {
-    "lib": "lib",
-    "test": "test"
-  }
+  "license": "UNLICENSED"
 }

@@ -155,8 +155,26 @@ async function validateRequirementPackage(rootDir, reviewSummary, uiManifests, e
     for (const manifest of uiManifests) {
       const artifact = packageArtifacts.get(manifest.sourceId);
       if (!artifact) errors.push(`requirement-package.json 缺少 UI 缓存 ${manifest.sourceId}`);
-      else if (artifact.status !== manifest.status || artifact.fetchedSections !== manifest.fetchedSections || artifact.manifest !== `./${manifest.manifest}`) {
+      else if (
+        artifact.status !== manifest.status
+        || artifact.fetchedSections !== manifest.fetchedSections
+        || artifact.manifest !== `./${manifest.manifest}`
+        || artifact.developmentReady !== manifest.developmentReady
+        || artifact.mappedFragments !== manifest.mappedFragments
+        || (artifact.storage?.type ?? null) !== (manifest.storage?.type ?? null)
+      ) {
         errors.push(`requirement-package.json 的 ${manifest.sourceId} 缓存状态已过期`);
+      }
+      if (artifact) {
+        for (const [label, relative] of [
+          ['manifest', artifact.manifest],
+          ['index', artifact.index],
+          ['sourceMap', artifact.sourceMap],
+          ...(artifact.storage?.archive ? [['archive', artifact.storage.archive]] : []),
+        ]) {
+          if (!relative || path.isAbsolute(relative)) errors.push(`requirement-package.json 的 ${manifest.sourceId} ${label} 路径必须是相对路径`);
+          else if (!(await exists(path.resolve(rootDir, relative)))) errors.push(`requirement-package.json 的 ${manifest.sourceId} ${label} 文件不存在：${relative}`);
+        }
       }
     }
     for (const id of packageArtifacts.keys()) {

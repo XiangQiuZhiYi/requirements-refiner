@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -25,6 +25,19 @@ const batchPlan = buildReviewPlan([{
 assert.equal(batchPlan.next.batchConfirmSuggested, true);
 assert.equal(batchPlan.next.unreviewedGuidePoints, 1);
 assert.deepEqual(batchPlan.next.focusItems, []);
+assert.equal(batchPlan.next.featureCount, 1);
+assert.equal(batchPlan.next.features[0].title, '创建记录');
+assert.equal(batchPlan.next.readyToAutoConfirm, true);
+
+const serialUcPlan = buildReviewPlan([
+  { id: 'P1-UC01-FR001', number: 1, title: '先审核的功能', file: 'UC01-第一个/需求引导.md', line: 10, reviewStatus: '未审核', syncStatus: 'synced' },
+  { id: 'P1-UC02-FR001', number: 1, title: '后审核的功能', file: 'UC02-第二个/需求引导.md', line: 10, reviewStatus: '未审核', syncStatus: 'synced' },
+], [{ id: 'P1-UC02-Q001', title: '阻塞问题', file: 'UC02-第二个/需求引导.md', line: 30, status: '待确认', impact: '阻塞开发', related: 'P1-UC02-FR001' }]);
+assert.equal(serialUcPlan.next.file, 'UC01-第一个/需求引导.md');
+assert.deepEqual(serialUcPlan.next.features.map((item) => item.title), ['先审核的功能']);
+assert.equal(serialUcPlan.next.pendingQuestionCount, 0);
+assert.equal(serialUcPlan.next.readyToAutoConfirm, true);
+assert.equal(serialUcPlan.groups[1].pendingQuestions[0].id, 'P1-UC02-Q001');
 
 async function write(target, content) {
   await mkdir(path.dirname(target), { recursive: true });
@@ -32,12 +45,9 @@ async function write(target, content) {
 }
 
 function run(script, root, expectSuccess = true, extraArgs = []) {
-  try {
-    return execFileSync(process.execPath, [script, root, ...extraArgs], { encoding: 'utf8' });
-  } catch (error) {
-    if (expectSuccess) throw error;
-    return `${error.stdout ?? ''}${error.stderr ?? ''}`;
-  }
+  const result = spawnSync(process.execPath, [script, root, ...extraArgs], { encoding: 'utf8' });
+  if (expectSuccess && result.status !== 0) throw new Error(`${result.stdout ?? ''}${result.stderr ?? ''}`);
+  return `${result.stdout ?? ''}${result.stderr ?? ''}`;
 }
 
 function detail(idPrefix = 'PX-REQ') {
@@ -89,6 +99,21 @@ try {
   assert.equal(multiValidation.unresolvedQuestions, 2);
   const ucGuideContent = await readFile(path.join(multi, 'UC01-创建记录', '需求引导.md'), 'utf8');
   assert.match(ucGuideContent, /\.\/详细需求\.md#p1-uc01-fr001/u);
+
+  const blockedCompletion = run(buildScript, multi, false, ['--complete-review-group', 'UC01']);
+  assert.match(blockedCompletion, /仍有未解决或未同步问题：P1-UC01-Q002/u);
+  await write(
+    path.join(multi, 'UC01-创建记录', '需求引导.md'),
+    ucGuideContent
+      .replace('- 状态：待确认', '- 状态：已解决')
+      .replace('- 关联需求：P1-UC01-FR001\n- 用户答复：\n- 已同步：否', '- 关联需求：P1-UC01-FR001\n- 用户答复：需要二次确认\n- 已同步：是'),
+  );
+  const completedUc = JSON.parse(run(buildScript, multi, true, ['--complete-review-group', 'UC01']));
+  assert.equal(completedUc.completedReviewGroup.label, 'UC01 创建记录');
+  assert.deepEqual(completedUc.completedReviewGroup.confirmedPoints, ['创建记录']);
+  const confirmedUcGuide = await readFile(path.join(multi, 'UC01-创建记录', '需求引导.md'), 'utf8');
+  assert.match(confirmedUcGuide, /- 审核状态：理解一致/u);
+  assert.equal(JSON.parse(await readFile(path.join(multi, 'requirement-index.json'), 'utf8')).guidePoints.find((item) => item.title === '创建记录').reviewStatus, '理解一致');
 
   await write(path.join(multi, 'UC02-重复编号', '详细需求.md'), detail('P1-UC01'));
   const duplicateReport = run(validateScript, multi, false);

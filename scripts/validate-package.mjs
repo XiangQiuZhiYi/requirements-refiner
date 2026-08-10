@@ -33,6 +33,8 @@ if (plugin.skills !== './skills/') errors.push('插件 skills 入口必须是 ./
 if ('mcpServers' in plugin) errors.push('plugin.json 不得绑定 MCP 服务器');
 if ('apps' in plugin || 'hooks' in plugin) errors.push('plugin.json 包含未实现的组件声明');
 if (packageJson.scripts?.postinstall) errors.push('不得使用 postinstall');
+if (packageJson.dependencies && Object.keys(packageJson.dependencies).length > 0) errors.push('运行时不得包含第三方依赖');
+if (packageJson.dependencies?.[packageJson.name]) errors.push('npm 包不得依赖自身');
 if (packageJson.engines?.node !== '>=20') errors.push('Node 版本要求必须为 >=20');
 if (packageJson.publishConfig?.access !== 'public') errors.push('npm 包必须配置公开发布');
 if (!packageJson.files?.includes('skills/')) errors.push('npm files 白名单缺少 skills/');
@@ -46,8 +48,11 @@ const required = [
   'skills/requirements-refiner/scripts/build-requirement-index.mjs',
   'skills/requirements-refiner/scripts/resolve-mcp-tools.mjs',
   'skills/requirements-refiner/scripts/ui-context-cache.mjs',
+  'skills/requirements-refiner/scripts/extract-ui-context.mjs',
+  'skills/requirements-refiner/references/ui-context-handoff.md',
 ];
 const files = await listFiles(root);
+if (packageJson.main && !files.includes(packageJson.main)) errors.push(`main 入口不存在：${packageJson.main}`);
 for (const target of required) if (!files.includes(target)) errors.push(`缺少文件：${target}`);
 if (files.some((file) => file.endsWith('/.mcp.json') || file === '.mcp.json')) errors.push('包内不得包含 .mcp.json');
 

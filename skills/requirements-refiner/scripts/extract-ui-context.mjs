@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 
+import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { gunzipSync } from 'node:zlib';
 
 function option(args, name, fallback = '') {
   const index = args.indexOf(name);
@@ -30,6 +32,67 @@ async function readJson(target) {
   return JSON.parse(await readFile(target, 'utf8'));
 }
 
+function sha256(content) {
+  return createHash('sha256').update(content).digest('hex');
+}
+
+function resolveCacheFile(cacheDir, relative) {
+  const target = path.resolve(cacheDir, relative);
+  if (target !== cacheDir && !target.startsWith(`${cacheDir}${path.sep}`)) throw new Error(`缓存路径越界：${relative}`);
+  return target;
+}
+
+async function readCompressedSections(cacheDir, manifest, index, selected) {
+  const archiveRelative = manifest.storage?.archive ?? index.archive;
+  if (!archiveRelative) throw new Error(`${manifest.sourceId} 缺少压缩归档路径`);
+  const archive = await readFile(resolveCacheFile(cacheDir, archiveRelative));
+  if (index.archiveBytes !== archive.byteLength || index.archiveSha256 !== sha256(archive)) {
+    throw new Error(`${manifest.sourceId} 压缩归档校验失败`);
+  }
+  const lines = gunzipSync(archive).toString('utf8').split('\n').filter(Boolean);
+  const bySection = new Map();
+  for (const line of lines) {
+    const envelope = JSON.parse(line);
+    bySection.set(envelope.sectionIndex, envelope.content);
+  }
+  const indexed = new Map((index.sections ?? []).map((item) => [item.sectionIndex, item]));
+  const sections = [];
+  for (const sectionIndex of [...selected].sort((left, right) => left - right)) {
+    const item = indexed.get(sectionIndex);
+    if (!item || !bySection.has(sectionIndex)) throw new Error(`缓存中不存在分区 ${sectionIndex}`);
+    const content = bySection.get(sectionIndex);
+    if (sha256(JSON.stringify(content)) !== item.sha256) throw new Error(`缓存分区校验失败：${sectionIndex}`);
+    sections.push({
+      sectionIndex,
+      sourceArchive: archiveRelative,
+      archiveLine: item.line,
+      sha256: item.sha256,
+      content,
+    });
+  }
+  return sections;
+}
+
+async function readLegacySections(cacheDir, manifest, index, selected) {
+  const bySection = new Map((index.sections ?? []).map((item) => [item.sectionIndex, item]));
+  const sections = [];
+  for (const sectionIndex of [...selected].sort((left, right) => left - right)) {
+    const item = bySection.get(sectionIndex);
+    if (!item) throw new Error(`缓存中不存在分区 ${sectionIndex}`);
+    const target = resolveCacheFile(cacheDir, item.file);
+    const rawBuffer = await readFile(target);
+    if (rawBuffer.byteLength !== item.bytes || sha256(rawBuffer) !== item.sha256) throw new Error(`缓存分区校验失败：${sectionIndex}`);
+    const raw = rawBuffer.toString('utf8');
+    sections.push({
+      sectionIndex,
+      sourceFile: item.file,
+      sha256: item.sha256,
+      content: manifest.format === 'json' ? JSON.parse(raw) : raw,
+    });
+  }
+  return sections;
+}
+
 export async function extractUiContext(rootInput, options) {
   const rootDir = path.resolve(rootInput);
   const cacheDir = path.join(rootDir, '_sources', 'raw', options.sourceId);
@@ -44,26 +107,18 @@ export async function extractUiContext(rootInput, options) {
     for (const sectionIndex of mapping.sections ?? []) selected.add(sectionIndex);
   }
   if (selected.size === 0) throw new Error('至少提供一个 --sections 或 --fragments');
-  const bySection = new Map((index.sections ?? []).map((item) => [item.sectionIndex, item]));
-  const sections = [];
-  for (const sectionIndex of [...selected].sort((left, right) => left - right)) {
-    const item = bySection.get(sectionIndex);
-    if (!item) throw new Error(`缓存中不存在分区 ${sectionIndex}`);
-    const raw = await readFile(path.resolve(cacheDir, item.file), 'utf8');
-    sections.push({
-      sectionIndex,
-      sourceFile: item.file,
-      sha256: item.sha256,
-      content: manifest.format === 'json' ? JSON.parse(raw) : raw,
-    });
-  }
+  const compressed = manifest.schemaVersion === 2 || manifest.storage?.type === 'gzip-jsonl';
+  const sections = compressed
+    ? await readCompressedSections(cacheDir, manifest, index, selected)
+    : await readLegacySections(cacheDir, manifest, index, selected);
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     sourceId: options.sourceId,
     sourceUrl: manifest.sourceUrl,
     fileId: manifest.fileId,
     layerId: manifest.layerId,
     format: manifest.format,
+    storage: compressed ? 'gzip-jsonl' : 'legacy-files',
     sections,
   };
 }

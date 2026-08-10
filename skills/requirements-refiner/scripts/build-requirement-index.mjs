@@ -342,6 +342,21 @@ function reviewGroupLabel(file) {
   return file.replace(/\/需求引导\.md$/u, '').replace(/\.md$/u, '');
 }
 
+function reviewGroupPosition(file) {
+  if (file === '00-需求引导.md') return [0, 0, file];
+  const match = file.match(/^UC(\d+)-/u);
+  if (match) return [1, Number(match[1]), file];
+  return [2, 0, file];
+}
+
+function compareReviewGroups(left, right) {
+  const leftPosition = reviewGroupPosition(left.file);
+  const rightPosition = reviewGroupPosition(right.file);
+  return leftPosition[0] - rightPosition[0]
+    || leftPosition[1] - rightPosition[1]
+    || leftPosition[2].localeCompare(rightPosition[2], 'zh-CN');
+}
+
 export function buildReviewPlan(points, questions) {
   const items = [];
   for (const question of questions) {
@@ -375,8 +390,8 @@ export function buildReviewPlan(points, questions) {
     items.push(item);
   }
 
-  items.sort((a, b) => a.priority - b.priority
-    || a.file.localeCompare(b.file, 'zh-CN')
+  items.sort((a, b) => a.file.localeCompare(b.file, 'zh-CN')
+    || a.priority - b.priority
     || a.line - b.line
     || a.id.localeCompare(b.id));
 
@@ -386,23 +401,35 @@ export function buildReviewPlan(points, questions) {
     grouped.get(item.file).push(item);
   }
   const groups = [...grouped.entries()].map(([file, groupItems]) => {
+    groupItems.sort((a, b) => a.priority - b.priority || a.line - b.line || a.id.localeCompare(b.id));
+    const features = points
+      .filter((item) => item.file === file)
+      .sort((a, b) => a.line - b.line)
+      .map((item) => ({ id: item.id, number: item.number, title: item.title, reviewStatus: item.reviewStatus }));
+    const pendingQuestions = questions
+      .filter((item) => item.file === file && item.status === '待确认')
+      .sort((a, b) => a.line - b.line)
+      .map((item) => ({ id: item.id, title: item.title, impact: item.impact, related: item.related }));
     const unreviewedGuidePoints = groupItems.filter((item) => item.kind === 'guidePoint' && item.reviewStatus === '未审核').length;
     const exceptionalItems = groupItems.filter((item) => item.kind === 'question' || item.reason !== '尚未审核');
+    const autoConfirmBlockers = groupItems.filter((item) => item.kind === 'guidePoint'
+      && (['需要修改', '存在疑问'].includes(item.reviewStatus) || item.syncStatus === 'possibly_stale'));
     return {
       file,
       label: reviewGroupLabel(file),
       priority: groupItems[0].reason,
       pendingItems: groupItems.length,
+      featureCount: features.length,
+      features,
+      pendingQuestionCount: pendingQuestions.length,
+      pendingQuestions,
       unreviewedGuidePoints,
       batchConfirmSuggested: unreviewedGuidePoints > 0,
+      readyToAutoConfirm: pendingQuestions.length === 0 && autoConfirmBlockers.length === 0 && unreviewedGuidePoints > 0,
       focusItems: exceptionalItems.slice(0, 3),
       itemIds: groupItems.map((item) => item.id),
     };
-  }).sort((a, b) => {
-    const left = items.find((item) => item.file === a.file)?.priority ?? 99;
-    const right = items.find((item) => item.file === b.file)?.priority ?? 99;
-    return left - right || a.file.localeCompare(b.file, 'zh-CN');
-  });
+  }).sort(compareReviewGroups);
 
   return {
     startFile: '00-需求引导.md',
@@ -410,6 +437,69 @@ export function buildReviewPlan(points, questions) {
     completed: groups.length === 0,
     next: groups[0] ?? null,
     groups,
+  };
+}
+
+async function resolveReviewGuide(rootDir, target) {
+  const guidePaths = await listGuideFiles(rootDir);
+  const candidates = guidePaths.map((guidePath) => ({
+    absolute: guidePath,
+    relative: path.relative(rootDir, guidePath).split(path.sep).join('/'),
+  }));
+  const normalized = String(target ?? '').trim().replace(/\\/gu, '/');
+  let matched = candidates.find((item) => item.relative === normalized || item.relative === normalized.replace(/^\.\//u, ''));
+  const uc = normalized.match(/(?:P(?:\d+|X)-)?(UC\d+)/iu)?.[1]?.toUpperCase();
+  if (!matched && uc) matched = candidates.find((item) => item.relative.startsWith(`${uc}-`));
+  if (!matched && /^(?:REQ|单体|整体|00)$/iu.test(normalized)) matched = candidates.find((item) => item.relative === '00-需求引导.md');
+  if (!matched) throw new Error(`找不到审核组：${target}`);
+  return matched;
+}
+
+export async function confirmResolvedReviewGroup(rootInput, target, requirements = null) {
+  const rootDir = path.resolve(rootInput);
+  const guide = await resolveReviewGuide(rootDir, target);
+  const original = await readFile(guide.absolute, 'utf8');
+  const questions = scanQuestionsFromContent(original, guide.relative);
+  const unresolved = questions.filter((item) => item.status !== '已解决' || item.synced !== '是');
+  if (unresolved.length > 0) {
+    throw new Error(`${reviewGroupLabel(guide.relative)} 仍有未解决或未同步问题：${unresolved.map((item) => item.id).join('、')}`);
+  }
+  const requirementItems = requirements ?? await scanRequirements(rootDir);
+  const points = scanGuidePointsFromContent(original, guide.relative, requirementItems);
+  if (points.length === 0) throw new Error(`${reviewGroupLabel(guide.relative)} 没有可确认的功能点`);
+  const blockers = points.filter((item) => ['需要修改', '存在疑问'].includes(item.reviewStatus) || item.syncStatus === 'possibly_stale');
+  if (blockers.length > 0) {
+    throw new Error(`${reviewGroupLabel(guide.relative)} 仍有未完成修改、疑问或同步漂移：${blockers.map((item) => item.id || item.title).join('、')}`);
+  }
+  const lines = original.split(/\r?\n/u);
+  const confirmed = [];
+  for (const point of [...points].sort((left, right) => right.line - left.line)) {
+    const headingIndex = point.line - 1;
+    const end = blockEnd(lines, headingIndex, 3);
+    let statusFound = false;
+    for (let cursor = headingIndex + 1; cursor < end; cursor += 1) {
+      const status = lines[cursor].match(/^(\s*(?:-\s*)?(?:\*\*)?审核状态(?:\*\*)?[：:]\s*)(.*?)\s*$/u);
+      if (!status) continue;
+      statusFound = true;
+      if (status[2] === '未审核') {
+        lines[cursor] = `${status[1]}理解一致`;
+        confirmed.push(point.id || point.title);
+      }
+      break;
+    }
+    if (!statusFound) {
+      const preferred = lines.findIndex((line, index) => index > headingIndex && index < end && /^\s*-\s*(?:关键规则|审核重点|参考详细文档)[：:]/u.test(line));
+      lines.splice(preferred >= 0 ? preferred : end, 0, '- 审核状态：理解一致');
+      confirmed.push(point.id || point.title);
+    }
+  }
+  const next = lines.join('\n');
+  if (next !== original) await writeFile(guide.absolute, next, 'utf8');
+  return {
+    file: guide.relative,
+    label: reviewGroupLabel(guide.relative),
+    confirmedPoints: confirmed,
+    alreadyUnderstood: points.filter((item) => item.reviewStatus === '理解一致').length,
   };
 }
 
@@ -521,19 +611,30 @@ export async function buildRequirementPackage(rootDir, index, sourceArtifacts) {
       details: detailFiles.map((file) => `./${file}`),
     },
     reviewSummary: index.reviewSummary,
+    uiHandoff: {
+      strategy: 'source-fragment-to-compressed-cache',
+      extractorScript: 'scripts/extract-ui-context.mjs',
+      refetchWhen: ['cache-missing', 'integrity-failed', 'user-requested-latest'],
+    },
     sourceArtifacts: sourceArtifacts.map((item) => ({
       id: item.sourceId,
       kind: item.kind,
       status: item.status,
+      developmentReady: item.developmentReady,
       manifest: `./${item.manifest}`,
+      index: item.indexFile,
+      sourceMap: item.sourceMapFile,
       sourceUrl: item.sourceUrl,
       fileId: item.fileId,
       layerId: item.layerId,
       sourceLayerId: item.sourceLayerId,
       format: item.format,
+      storage: item.storage ? { ...item.storage, archive: item.archiveFile } : null,
       expectedSections: item.expectedSections,
       fetchedSections: item.fetchedSections,
       totalBytes: item.totalBytes,
+      archiveBytes: item.archiveBytes ?? null,
+      mappedFragments: item.mappedFragments ?? 0,
     })),
   };
   await writeFile(path.join(rootDir, 'requirement-package.json'), `${JSON.stringify(requirementPackage, null, 2)}\n`, 'utf8');
@@ -544,7 +645,17 @@ export async function buildRequirementIndex(rootInput, options = {}) {
   const rootDir = path.resolve(rootInput);
   const requirements = await scanRequirements(rootDir);
   assertNoDuplicates(requirements, '需求');
-  const linkResult = await refreshGuideLinks(rootDir, requirements, options);
+  let linkResult = await refreshGuideLinks(rootDir, requirements, options);
+  let reviewCompletion = null;
+  if (options.completeReviewGroup) {
+    reviewCompletion = await confirmResolvedReviewGroup(rootDir, options.completeReviewGroup, requirements);
+    const completionRefresh = await refreshGuideLinks(rootDir, requirements, options);
+    linkResult = {
+      updated: linkResult.updated || completionRefresh.updated,
+      updatedFiles: [...new Set([...linkResult.updatedFiles, ...completionRefresh.updatedFiles])],
+      missingIds: [...new Set([...linkResult.missingIds, ...completionRefresh.missingIds])],
+    };
+  }
   const guidePoints = await scanGuidePoints(rootDir, requirements);
   const questions = await scanQuestions(rootDir);
   const sources = await scanSources(rootDir);
@@ -567,21 +678,31 @@ export async function buildRequirementIndex(rootInput, options = {}) {
   };
   await writeFile(path.join(rootDir, 'requirement-index.json'), `${JSON.stringify(index, null, 2)}\n`, 'utf8');
   const requirementPackage = await buildRequirementPackage(rootDir, index, sourceArtifacts);
-  return { index, linkResult, requirementPackage };
+  return { index, linkResult, requirementPackage, reviewCompletion };
+}
+
+function cliOption(args, name, fallback = '') {
+  const index = args.indexOf(name);
+  return index >= 0 && index + 1 < args.length ? args[index + 1] : fallback;
 }
 
 async function main() {
   const args = process.argv.slice(2);
-  const rootDir = args.find((arg) => !arg.startsWith('--'));
+  const completeReviewGroup = cliOption(args, '--complete-review-group');
+  const optionValues = new Set([completeReviewGroup].filter(Boolean));
+  const rootDir = args.find((arg) => !arg.startsWith('--') && !optionValues.has(arg));
   const acceptGuideSync = args.includes('--accept-guide-sync');
   if (!rootDir) {
-    process.stderr.write('用法: node build-requirement-index.mjs <需求包目录> [--accept-guide-sync]\n');
+    process.stderr.write('用法: node build-requirement-index.mjs <需求包目录> [--accept-guide-sync] [--complete-review-group UC01]\n');
     process.exitCode = 2;
     return;
   }
 
   try {
-    const { index, linkResult, requirementPackage } = await buildRequirementIndex(rootDir, { acceptGuideSync });
+    const { index, linkResult, requirementPackage, reviewCompletion } = await buildRequirementIndex(rootDir, {
+      acceptGuideSync,
+      completeReviewGroup,
+    });
     process.stdout.write(`${JSON.stringify({
       indexed: index.requirements.length,
       guidePoints: index.reviewSummary.total,
@@ -591,10 +712,14 @@ async function main() {
       staleGuidePoints: index.reviewSummary.staleGuidePoints,
       nextReviewFile: index.reviewPlan.next?.file ?? null,
       nextReviewItems: index.reviewPlan.next?.focusItems.map((item) => item.id) ?? [],
+      nextReviewFeatures: index.reviewPlan.next?.features.map((item) => ({ id: item.id, title: item.title, status: item.reviewStatus })) ?? [],
+      nextReviewQuestions: index.reviewPlan.next?.pendingQuestions.map((item) => ({ id: item.id, title: item.title, impact: item.impact })) ?? [],
+      nextReviewReadyToAutoConfirm: index.reviewPlan.next?.readyToAutoConfirm ?? false,
       guideUpdated: linkResult.updated,
       guideFilesUpdated: linkResult.updatedFiles,
       missingLinkIds: linkResult.missingIds,
       acceptedGuideSync: acceptGuideSync,
+      completedReviewGroup: reviewCompletion,
       indexFile: path.join(path.resolve(rootDir), 'requirement-index.json'),
       packageFile: path.join(path.resolve(rootDir), 'requirement-package.json'),
       uiCaches: requirementPackage.sourceArtifacts.map((item) => ({ id: item.id, status: item.status })),

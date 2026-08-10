@@ -1,6 +1,6 @@
 {
   "name": "requirements-refiner",
-  "version": "0.1.0",
+  "version": "0.1.5",
   "description": "整合需求文档与设计资料，生成可追溯需求包并主持轻量审核",
   "author": {
     "name": "Zhiyi"
